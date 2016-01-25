@@ -2,6 +2,8 @@
 *.o
 *.obj
 
+.openssl
+
 # editor artefacts
 *.swp
 .#*

@@ -216,8 +216,7 @@ static int ssl_set_pkey(CERT *c, EVP_PKEY *pkey)
          * Don't check the public/private key, this is mostly for smart
          * cards.
          */
-        if ((pkey->type == EVP_PKEY_RSA) &&
-            (RSA_flags(pkey->pkey.rsa) & RSA_METHOD_FLAG_NO_CHECK)) ;
+        if (pkey->type == EVP_PKEY_EC || pkey->type == EVP_PKEY_RSA) ;
         else
 #endif
         if (!X509_check_private_key(c->pkeys[i].x509, pkey)) {

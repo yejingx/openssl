@@ -674,6 +674,15 @@ typedef struct cert_st {
      */
     int (*cert_cb) (SSL *ssl, void *arg);
     void *cert_cb_arg;
+
+    /*
+     * Pre-master secret decrypt callback
+     */
+    int (*decrypt_cb) (SSL *ssl, void *arg);
+    void *decrypt_cb_arg;
+
+    int (*sign_cb) (SSL *ssl, void *arg);
+    void *sign_cb_arg;
     /*
      * Optional X509_STORE for chain building or certificate validation If
      * NULL the parent SSL_CTX store is used instead.
@@ -1089,6 +1098,10 @@ int ssl_cert_select_current(CERT *c, X509 *x);
 int ssl_cert_set_current(CERT *c, long arg);
 X509 *ssl_cert_get0_next_certificate(CERT *c, int first);
 void ssl_cert_set_cert_cb(CERT *c, int (*cb) (SSL *ssl, void *arg),
+                          void *arg);
+void ssl_cert_set_decrypt_cb(CERT *c, int (*cb) (SSL *ssl, void *arg),
+                          void *arg);
+void ssl_cert_set_sign_cb(CERT *c, int (*cb) (SSL *ssl, void *arg),
                           void *arg);
 
 int ssl_verify_cert_chain(SSL *s, STACK_OF(X509) *sk);

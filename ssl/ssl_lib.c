@@ -2217,6 +2217,28 @@ void SSL_set_cert_cb(SSL *s, int (*cb) (SSL *ssl, void *arg), void *arg)
 {
     ssl_cert_set_cert_cb(s->cert, cb, arg);
 }
+ 
+void SSL_CTX_set_decrypt_cb(SSL_CTX *c, int (*cb) (SSL *ssl, void *arg),
+                         void *arg)
+{
+    ssl_cert_set_decrypt_cb(c->cert, cb, arg);
+}
+
+void SSL_set_decrypt_cb(SSL *s, int (*cb) (SSL *ssl, void *arg), void *arg)
+{
+    ssl_cert_set_decrypt_cb(s->cert, cb, arg);
+}
+
+void SSL_CTX_set_sign_cb(SSL_CTX *c, int (*cb) (SSL *ssl, void *arg),
+                         void *arg)
+{
+    ssl_cert_set_sign_cb(c->cert, cb, arg);
+}
+
+void SSL_set_sign_cb(SSL *s, int (*cb) (SSL *ssl, void *arg), void *arg)
+{
+    ssl_cert_set_sign_cb(s->cert, cb, arg);
+}
 
 void ssl_set_cert_masks(CERT *c, const SSL_CIPHER *cipher)
 {
@@ -2764,7 +2786,7 @@ int SSL_do_handshake(SSL *s)
 
     s->method->ssl_renegotiate_check(s);
 
-    if (SSL_in_init(s) || SSL_in_before(s)) {
+    if (SSL_in_init(s) || SSL_in_before(s) || SSL_in_accept_init(s)) {
         ret = s->handshake_func(s);
     }
     return (ret);

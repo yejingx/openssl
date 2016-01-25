@@ -497,6 +497,14 @@ int ssl3_accept(SSL *s)
             s->state = SSL3_ST_SW_CERT_REQ_A;
             s->init_num = 0;
             break;
+        case SSL3_ST_SW_KEY_EXCH_C:
+            ret = ssl3_send_server_key_exchange(s);
+            if (ret <= 0)
+                goto end;
+
+            s->state = SSL3_ST_SW_CERT_REQ_A;
+            s->init_num = 0;
+            break;
 
         case SSL3_ST_SW_CERT_REQ_A:
         case SSL3_ST_SW_CERT_REQ_B:
@@ -600,6 +608,7 @@ int ssl3_accept(SSL *s)
 
         case SSL3_ST_SR_KEY_EXCH_A:
         case SSL3_ST_SR_KEY_EXCH_B:
+        case SSL3_ST_SR_KEY_EXCH_C:
             ret = ssl3_get_client_key_exchange(s);
             if (ret <= 0)
                 goto end;
@@ -1614,6 +1623,9 @@ int ssl3_send_server_key_exchange(SSL *s)
     int nr[4], kn;
     BUF_MEM *buf;
     EVP_MD_CTX md_ctx;
+    EVP_MD_CTX tmp_ctx;
+    unsigned char m[EVP_MAX_MD_SIZE];
+    unsigned int m_len;
 
     EVP_MD_CTX_init(&md_ctx);
     if (s->state == SSL3_ST_SW_KEY_EXCH_A) {
@@ -1966,10 +1978,33 @@ int ssl3_send_server_key_exchange(SSL *s)
                     q += i;
                     j += i;
                 }
-                if (RSA_sign(NID_md5_sha1, md_buf, j,
-                             &(p[2]), &u, pkey->pkey.rsa) <= 0) {
-                    SSLerr(SSL_F_SSL3_SEND_SERVER_KEY_EXCHANGE, ERR_LIB_RSA);
-                    goto err;
+                if (s->cert->sign_cb) {
+                    s->key_ex.from = md_buf;
+                    s->key_ex.flen = j;
+                    s->key_ex.to = &(p[2]);
+                    s->key_ex.tlen = 0;
+                    s->key_ex.type = pkey->type;
+                    s->key_ex.nid = NID_md5_sha1;
+                    s->key_ex.p = p;
+                    s->key_ex.n = n;
+
+                    i = s->cert->sign_cb(s, s->cert->sign_cb_arg);
+                    if (i < 0) {
+                        s->rwstate = SSL_X509_LOOKUP;
+                        s->state = SSL3_ST_SW_KEY_EXCH_C;
+                        goto s_err;
+                    } else if (i == 0) {
+                        SSLerr(SSL_F_SSL3_SEND_SERVER_KEY_EXCHANGE, ERR_LIB_RSA);
+                        goto err;
+                    }
+                    s->rwstate = SSL_NOTHING;
+                    u = s->key_ex.tlen;
+                } else {
+                    if (RSA_sign(NID_md5_sha1, md_buf, j,
+                                 &(p[2]), &u, pkey->pkey.rsa) <= 0) {
+                        SSLerr(SSL_F_SSL3_SEND_SERVER_KEY_EXCHANGE, ERR_LIB_RSA);
+                        goto err;
+                    }
                 }
                 s2n(u, p);
                 n += u + 2;
@@ -1995,13 +2030,56 @@ int ssl3_send_server_key_exchange(SSL *s)
                                           SSL3_RANDOM_SIZE) <= 0
                         || EVP_SignUpdate(&md_ctx, &(s->s3->server_random[0]),
                                           SSL3_RANDOM_SIZE) <= 0
-                        || EVP_SignUpdate(&md_ctx, d, n) <= 0
-                        || EVP_SignFinal(&md_ctx, &(p[2]),
-                                         (unsigned int *)&i, pkey) <= 0) {
+                        || EVP_SignUpdate(&md_ctx, d, n) <= 0 ) {
                     SSLerr(SSL_F_SSL3_SEND_SERVER_KEY_EXCHANGE, ERR_LIB_EVP);
                     al = SSL_AD_INTERNAL_ERROR;
                     goto f_err;
                 }
+
+                if (s->cert->sign_cb) {
+                    EVP_MD_CTX_init(&tmp_ctx);
+                    if (!EVP_MD_CTX_copy_ex(&tmp_ctx, &md_ctx)) {
+                        SSLerr(SSL_F_SSL3_SEND_SERVER_KEY_EXCHANGE, ERR_LIB_EVP);
+                        al = SSL_AD_INTERNAL_ERROR;
+                        goto f_err;
+                    }
+                    if (!EVP_DigestFinal_ex(&tmp_ctx, &(m[0]), &m_len)) {
+                        SSLerr(SSL_F_SSL3_SEND_SERVER_KEY_EXCHANGE, ERR_LIB_EVP);
+                        al = SSL_AD_INTERNAL_ERROR;
+                        goto f_err;
+                    }
+                    EVP_MD_CTX_cleanup(&tmp_ctx);
+
+                    s->key_ex.from = m;
+                    s->key_ex.flen = m_len;
+                    s->key_ex.to = &(p[2]);
+                    s->key_ex.tlen = 0;
+                    s->key_ex.type = pkey->type;
+                    s->key_ex.nid = EVP_MD_nid(md);
+                    s->key_ex.p = p;
+                    s->key_ex.n = n;
+
+                    j = s->cert->sign_cb(s, s->cert->sign_cb_arg);
+                    if (j < 0) {
+                        s->rwstate = SSL_X509_LOOKUP;
+                        s->state = SSL3_ST_SW_KEY_EXCH_C;
+                        goto s_err;
+                    } else if (j == 0) {
+                        SSLerr(SSL_F_SSL3_SEND_SERVER_KEY_EXCHANGE, ERR_LIB_EVP);
+                        al = SSL_AD_INTERNAL_ERROR;
+                        goto f_err;
+                    }
+                    s->rwstate = SSL_NOTHING;
+                    i = s->key_ex.tlen;
+                } else {
+                    if (EVP_SignFinal(&md_ctx, &(p[2]),
+                                       (unsigned int *)&i, pkey) <= 0) {
+                        SSLerr(SSL_F_SSL3_SEND_SERVER_KEY_EXCHANGE, ERR_LIB_EVP);
+                        al = SSL_AD_INTERNAL_ERROR;
+                        goto f_err;
+                    }
+                }
+
                 s2n(i, p);
                 n += i + 2;
                 if (SSL_USE_SIGALGS(s))
@@ -2016,6 +2094,29 @@ int ssl3_send_server_key_exchange(SSL *s)
         }
 
         ssl_set_handshake_header(s, SSL3_MT_SERVER_KEY_EXCHANGE, n);
+    } else if (s->state == SSL3_ST_SW_KEY_EXCH_C) {
+        n = s->key_ex.n;
+        p = s->key_ex.p;
+
+        j = s->cert->sign_cb(s, s->cert->sign_cb_arg);
+        if (j < 0) {
+            s->rwstate = SSL_X509_LOOKUP;
+            goto s_err;
+        } else if (j == 0) {
+            SSLerr(SSL_F_SSL3_SEND_SERVER_KEY_EXCHANGE, ERR_LIB_EVP);
+            al = SSL_AD_INTERNAL_ERROR;
+            goto f_err;
+        }
+        s->rwstate = SSL_NOTHING;
+        i = s->key_ex.tlen;
+
+        s2n(i, p);
+        n += i + 2;
+
+        if (SSL_USE_SIGALGS(s))
+            n += 2;
+
+        ssl_set_handshake_header(s, SSL3_MT_SERVER_KEY_EXCHANGE, n);
     }
 
     s->state = SSL3_ST_SW_KEY_EXCH_B;
@@ -2024,13 +2125,14 @@ int ssl3_send_server_key_exchange(SSL *s)
  f_err:
     ssl3_send_alert(s, SSL3_AL_FATAL, al);
  err:
+    s->state = SSL_ST_ERR;
+ s_err:
 #ifndef OPENSSL_NO_ECDH
     if (encodedPoint != NULL)
         OPENSSL_free(encodedPoint);
     BN_CTX_free(bn_ctx);
 #endif
     EVP_MD_CTX_cleanup(&md_ctx);
-    s->state = SSL_ST_ERR;
     return (-1);
 }
 
@@ -2153,6 +2255,9 @@ int ssl3_get_client_key_exchange(SSL *s)
     BN_CTX *bn_ctx = NULL;
 #endif
 
+    if (s->state == SSL3_ST_SR_KEY_EXCH_C)
+        goto retry_decrypt;
+
     n = s->method->ssl_get_message(s,
                                    SSL3_ST_SR_KEY_EXCH_A,
                                    SSL3_ST_SR_KEY_EXCH_B,
@@ -2240,8 +2345,31 @@ int ssl3_get_client_key_exchange(SSL *s)
         if (RAND_pseudo_bytes(rand_premaster_secret,
                               sizeof(rand_premaster_secret)) <= 0)
             goto err;
-        decrypt_len =
-            RSA_private_decrypt((int)n, p, p, rsa, RSA_PKCS1_PADDING);
+        if (s->cert->decrypt_cb) {
+            s->key_ex.from = p;
+            s->key_ex.flen = n;
+            s->key_ex.to = p;
+            s->key_ex.tlen = 0;
+            s->key_ex.type = 0;
+retry_decrypt:
+            i = s->cert->decrypt_cb(s, s->cert->decrypt_cb_arg);
+            if (i < 0) {
+                s->rwstate = SSL_X509_LOOKUP;
+                s->state = SSL3_ST_SR_KEY_EXCH_C;
+                goto s_err;
+            } else if (i == 0) {
+                al = SSL_AD_INTERNAL_ERROR;
+                SSLerr(SSL_F_SSL3_GET_CLIENT_KEY_EXCHANGE, SSL_R_DECRYPT_CB_ERROR);
+                goto f_err;
+            }
+            s->rwstate = SSL_NOTHING;
+            p = s->key_ex.from;
+            n = s->key_ex.flen;
+            decrypt_len = s->key_ex.tlen;
+        } else {
+            decrypt_len =
+                RSA_private_decrypt((int)n, p, p, rsa, RSA_PKCS1_PADDING);
+        }
         ERR_clear_error();
 
         /*
@@ -2942,6 +3070,8 @@ int ssl3_get_client_key_exchange(SSL *s)
 #if !defined(OPENSSL_NO_DH) || !defined(OPENSSL_NO_RSA) || !defined(OPENSSL_NO_ECDH) || defined(OPENSSL_NO_SRP)
  err:
 #endif
+    s->state = SSL_ST_ERR;
+ s_err:
 #ifndef OPENSSL_NO_ECDH
     EVP_PKEY_free(clnt_pub_pkey);
     EC_POINT_free(clnt_ecpoint);
@@ -2949,7 +3079,6 @@ int ssl3_get_client_key_exchange(SSL *s)
         EC_KEY_free(srvr_ecdh);
     BN_CTX_free(bn_ctx);
 #endif
-    s->state = SSL_ST_ERR;
     return (-1);
 }
 

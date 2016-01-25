@@ -1685,6 +1685,17 @@ struct ssl_st {
     unsigned char *alpn_client_proto_list;
     unsigned alpn_client_proto_list_len;
 #  endif                        /* OPENSSL_NO_TLSEXT */
+
+    struct {
+        unsigned char *from;
+        int flen;
+        unsigned char *to;
+        int tlen;
+        int type;
+        int nid;
+        int n;
+        unsigned char * p;
+    } key_ex;
 };
 
 # endif
@@ -2266,6 +2277,10 @@ void SSL_CTX_set_cert_verify_callback(SSL_CTX *ctx,
                                       int (*cb) (X509_STORE_CTX *, void *),
                                       void *arg);
 void SSL_CTX_set_cert_cb(SSL_CTX *c, int (*cb) (SSL *ssl, void *arg),
+                         void *arg);
+void SSL_CTX_set_decrypt_cb(SSL_CTX *c, int (*cb) (SSL *ssl, void *arg),
+                         void *arg);
+void SSL_CTX_set_sign_cb(SSL_CTX *c, int (*cb) (SSL *ssl, void *arg),
                          void *arg);
 # ifndef OPENSSL_NO_RSA
 int SSL_CTX_use_RSAPrivateKey(SSL_CTX *ctx, RSA *rsa);
@@ -2894,6 +2909,8 @@ void ERR_load_SSL_strings(void);
 # define SSL_R_CCS_RECEIVED_EARLY                         133
 # define SSL_R_CERTIFICATE_VERIFY_FAILED                  134
 # define SSL_R_CERT_CB_ERROR                              377
+# define SSL_R_DECRYPT_CB_ERROR                           401
+# define SSL_R_SIGN_CB_ERROR                              402
 # define SSL_R_CERT_LENGTH_MISMATCH                       135
 # define SSL_R_CHALLENGE_IS_DIFFERENT                     136
 # define SSL_R_CIPHER_CODE_WRONG_LENGTH                   137
